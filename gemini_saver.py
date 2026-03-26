@@ -384,11 +384,19 @@ class GeminiChatSaver:
             
             conversations = await self.extract_conversation()
             
-            # 从页面标题提取实际的对话标题
-            page_title = await self.page.title()
-            # Gemini 的页面标题通常是 "对话标题 - Google Gemini" 或类似
-            chat_title = page_title.replace(' - Google Gemini', '').replace(' - Gemini', '').strip()
-            if not chat_title or chat_title in ('Gemini', 'Google Gemini'):
+            # 从页面 DOM 提取对话标题（比直接拿 `title` 更准确）
+            chat_title = await self.page.evaluate('''
+                () => {
+                    // Gemini 的活动对话标题在顶部的 .conversation-title-container 中
+                    const titleEl = document.querySelector('.conversation-title-container, .top-bar-actions .gds-title-m, [data-test-id="chat-title"]');
+                    if (titleEl && titleEl.innerText) {
+                        return titleEl.innerText.trim();
+                    }
+                    return document.title.replace(' - Google Gemini', '').replace(' - Gemini', '').trim();
+                }
+            ''')
+            
+            if not chat_title or chat_title in ('Gemini', 'Google Gemini', 'New chat'):
                 chat_id = url.split('?')[0].rstrip('/').split('/')[-1]
                 chat_title = f'Gemini_对话_{chat_id}'
             
