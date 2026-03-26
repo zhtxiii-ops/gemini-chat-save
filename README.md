@@ -5,8 +5,10 @@ This tool allows you to save Google Gemini chat conversations to local Markdown 
 ## Features
 
 - **Save to Markdown**: Converts chat content to formatted Markdown.
+- **Extract Generated Images**: Automatically downloads Gemini-generated images and embeds them in the output.
 - **Filter Thinking Process**: Option to exclude the "thinking" blocks from the output.
 - **Auto-Scroll**: Automatically scrolls to load the entire conversation history.
+- **One-Click PDF**: Convert conversations directly to PDF with `gemini2pdf.py`.
 - **Login State Reuse**: Attempts to reuse your Chrome login state to avoid manual login (if available).
 
 ## Prerequisites
@@ -14,24 +16,19 @@ This tool allows you to save Google Gemini chat conversations to local Markdown 
 - Python 3.7+
 - Chrome browser (for login state reuse)
 
-## Installation
+The script now seamlessly manages an isolated Python virtual environment (`.venv`).
 
-1. Install Python dependencies:
+1. Make the wrapper script executable (only needed once):
    ```bash
-   pip install -r requirements.txt
+   chmod +x gemini2pdf.sh
    ```
 
-2. Install Playwright browsers:
-   ```bash
-   playwright install chromium
-   ```
+2. That's it! The script will automatically create a virtual environment, install dependencies, and download the Chromium browser on its first run.
 
-## Usage
-
-Run the script with the Gemini chat URL and the desired output file path.
+It is recommended to use the `gemini2pdf.sh` shell script, which automatically handles standard environment isolation for you.
 
 ```bash
-python main.py <URL> -o <OUTPUT_FILE> [OPTIONS]
+./gemini2pdf.sh "URL" [OPTIONS]
 ```
 
 ### Options
@@ -41,17 +38,50 @@ python main.py <URL> -o <OUTPUT_FILE> [OPTIONS]
 - `--include-thinking`: Include the AI's thinking process in the output (default is to filter it out).
 - `-h, --help`: Show help message.
 
-### Examples
-
 **Basic usage:**
 ```bash
-python main.py https://gemini.google.com/app/12345678 -o my_chat.md
+./gemini2pdf.sh "https://gemini.google.com/app/12345678"
 ```
 
 **Include thinking process:**
 ```bash
-python main.py https://gemini.google.com/app/12345678 -o my_chat_with_thoughts.md --include-thinking
+./gemini2pdf.sh "https://gemini.google.com/app/12345678" --include-thinking
 ```
+
+---
+
+## 一键转换 PDF (gemini2pdf.py)
+
+新增的 `gemini2pdf.py` 命令可以直接将 Gemini 对话一键保存为 PDF，无需手动指定输出文件名。
+
+### 使用方法
+
+```bash
+./gemini2pdf.sh "URL" [OPTIONS]
+```
+
+### 选项
+
+- `-d, --dir DIR`: 输出目录（默认为当前目录）
+- `--keep-md`: 保留中间的 Markdown 文件
+- `--include-thinking`: 包含思考过程
+
+**基本用法（自动生成文件名）：**
+```bash
+./gemini2pdf.sh "https://gemini.google.com/app/12345678"
+```
+
+**指定输出目录：**
+```bash
+./gemini2pdf.sh "https://gemini.google.com/app/12345678" -d ~/Documents
+```
+
+**同时保留 Markdown 和 PDF：**
+```bash
+./gemini2pdf.sh "https://gemini.google.com/app/12345678" --keep-md
+```
+
+---
 
 ## How it works
 

@@ -102,23 +102,41 @@ class GeminiChatSaver:
             print('✗ 未能加载对话内容，请检查 URL 是否正确')
             return False
     
-    async def scroll_to_load_all(self):
-        '''向上滚动加载所有历史消息'''
+    async def scroll_to_load_all(self) -> set:
+        '''
+        向上滚动加载所有历史消息，同时收集图片 URL
+        
+        Returns:
+            收集到的所有图片 URL 集合
+        '''
         print('正在加载所有对话内容...')
         
         prev_count = 0
         stable_rounds = 0
         max_stable_rounds = 3  # 连续3次数量不变则认为加载完成
         
+        # 收集所有图片 URL
+        all_image_urls = set()
+        
         while stable_rounds < max_stable_rounds:
             # 获取当前对话数量
             curr_count = await self.page.locator('.conversation-container').count()
+            
+            # 收集当前可见的图片 URL
+            current_urls = await self.page.evaluate('''
+                () => {
+                    const images = document.querySelectorAll('img[src*="googleusercontent.com/gg/"]');
+                    return Array.from(images).map(img => img.src);
+                }
+            ''')
+            for url in current_urls:
+                all_image_urls.add(url)
             
             if curr_count == prev_count:
                 stable_rounds += 1
             else:
                 stable_rounds = 0
-                print(f'  已加载 {curr_count} 条对话...')
+                print(f'  已加载 {curr_count} 条对话...（已发现 {len(all_image_urls)} 张图片）')
             
             prev_count = curr_count
             
@@ -129,7 +147,92 @@ class GeminiChatSaver:
             ''')
             await self.page.wait_for_timeout(1000)
         
-        print(f'✓ 共加载 {prev_count} 条对话')
+        # 滚动回底部，再收集一次可能遗漏的图片
+        await self.page.evaluate('''
+            const scroller = document.querySelector('infinite-scroller.chat-history');
+            if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        ''')
+        await self.page.wait_for_timeout(2000)
+        
+        # 再次收集图片
+        final_urls = await self.page.evaluate('''
+            () => {
+                const images = document.querySelectorAll('img[src*="googleusercontent.com/gg/"]');
+                return Array.from(images).map(img => img.src);
+            }
+        ''')
+        for url in final_urls:
+            all_image_urls.add(url)
+        
+        print(f'✓ 共加载 {prev_count} 条对话，发现 {len(all_image_urls)} 张图片')
+        
+        return all_image_urls
+    
+    async def download_images_via_playwright(self, image_urls: set, images_dir: str = None) -> dict:
+        '''
+        使用 Playwright 的请求上下文下载图片（会携带浏览器的 cookies）
+        
+        Args:
+            image_urls: 图片 URL 集合
+            images_dir: 图片保存目录
+            
+        Returns:
+            图片 URL 到本地路径的映射字典
+        '''
+        if not image_urls:
+            return {}
+        
+        import hashlib
+        from pathlib import Path
+        
+        print(f'🖼️  正在下载 {len(image_urls)} 张图片...')
+        
+        image_map = {}
+        images_path = Path(images_dir) if images_dir else None
+        if images_path:
+            images_path.mkdir(parents=True, exist_ok=True)
+        
+        for i, url in enumerate(image_urls):
+            try:
+                # 使用 Playwright 的 context.request 发送请求（携带 cookies）
+                response = await self.context.request.get(url)
+                
+                if response.ok:
+                    image_data = await response.body()
+                    
+                    # 确定文件扩展名
+                    content_type = response.headers.get('content-type', 'image/jpeg')
+                    ext = '.jpg'
+                    if 'png' in content_type:
+                        ext = '.png'
+                    elif 'gif' in content_type:
+                        ext = '.gif'
+                    elif 'webp' in content_type:
+                        ext = '.webp'
+                    
+                    # 生成文件名
+                    url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                    filename = f'gemini_img_{i+1:02d}_{url_hash}{ext}'
+                    
+                    if images_path:
+                        filepath = images_path / filename
+                        with open(filepath, 'wb') as f:
+                            f.write(image_data)
+                        image_map[url] = str(filepath)
+                        print(f'  ✓ 已保存: {filename}')
+                    else:
+                        # 转换为 base64 data URL
+                        import base64
+                        b64 = base64.b64encode(image_data).decode('utf-8')
+                        image_map[url] = f'data:{content_type};base64,{b64}'
+                else:
+                    print(f'  ⚠️ 下载失败 (HTTP {response.status}): {url[:50]}...')
+            except Exception as e:
+                print(f'  ⚠️ 下载出错: {e}')
+        
+        print(f'✓ 已下载 {len(image_map)} 张图片')
+        
+        return image_map
     
     async def extract_conversation(self) -> list:
         '''
@@ -173,7 +276,19 @@ class GeminiChatSaver:
                         clone.querySelectorAll('.thoughts-header, .thoughts-content, thought-response, .thoughts-container')
                             .forEach(el => el.remove());
                         
-                        // 移除不需要的 UI 元素
+                        // 保留生成图像：将 image-button 内的 img 移动到其父级
+                        clone.querySelectorAll('button.image-button').forEach(btn => {
+                            const img = btn.querySelector('img');
+                            if (img && img.src && img.src.includes('googleusercontent.com')) {
+                                // 创建一个新的 img 元素放在 button 外面
+                                const newImg = document.createElement('img');
+                                newImg.src = img.src;
+                                newImg.alt = img.alt || '生成的图像';
+                                btn.parentNode.insertBefore(newImg, btn);
+                            }
+                        });
+                        
+                        // 移除不需要的 UI 元素（包括已处理的 image-button）
                         clone.querySelectorAll('button, .feedback-buttons, .response-actions, .copy-button, .code-block-actions')
                             .forEach(el => el.remove());
                         
@@ -242,13 +357,16 @@ class GeminiChatSaver:
         return '\n'.join(lines)
     
     
-    async def get_markdown_content(self, url: str):
+    async def get_markdown_content(self, url: str, images_dir: str = None):
         '''
-        保存对话到文件
+        获取对话的 Markdown 内容
         
         Args:
             url: Gemini 对话 URL
-            output_path: 输出文件路径
+            images_dir: 图片保存目录，如果提供则下载图片到本地
+            
+        Returns:
+            Markdown 格式的对话内容
         '''
         try:
             await self.start_browser()
@@ -256,23 +374,42 @@ class GeminiChatSaver:
             if not await self.navigate_to_chat(url):
                 return
             
-            await self.scroll_to_load_all()
+            # 滚动加载所有对话，同时收集图片 URL
+            collected_image_urls = await self.scroll_to_load_all()  # set of URLs
+            
+            # 使用 Playwright 下载图片
+            image_map = {}
+            if collected_image_urls:
+                image_map = await self.download_images_via_playwright(collected_image_urls, images_dir)
             
             conversations = await self.extract_conversation()
             
-            # 从 URL 提取对话 ID 作为标题的一部分
-            chat_id = url.split('/')[-1]
-            title = f'Gemini 对话 ({chat_id})'
+            # 从页面标题提取实际的对话标题
+            page_title = await self.page.title()
+            # Gemini 的页面标题通常是 "对话标题 - Google Gemini" 或类似
+            chat_title = page_title.replace(' - Google Gemini', '').replace(' - Gemini', '').strip()
+            if not chat_title or chat_title in ('Gemini', 'Google Gemini'):
+                chat_id = url.split('?')[0].rstrip('/').split('/')[-1]
+                chat_title = f'Gemini_对话_{chat_id}'
             
-            markdown_content = self.to_markdown(conversations, title)
+            markdown_content = self.to_markdown(conversations, chat_title)
             
-            return markdown_content
+            # 替换 Markdown 中的图片链接
+            if image_map:
+                import re
+                for original_url, new_path in image_map.items():
+                    # 处理 Markdown 中的图片语法 ![alt](url)
+                    # 匹配并替换 URL
+                    pattern = re.escape(original_url)
+                    markdown_content = re.sub(pattern, new_path, markdown_content)
+            
+            return markdown_content, chat_title
         finally:
             await self.close_browser()
 
 def save_gemini(url: str, output_path: str):
     saver = GeminiChatSaver()
-    markdown_content = asyncio.run(saver.get_markdown_content(url))
+    markdown_content, title = asyncio.run(saver.get_markdown_content(url))
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(markdown_content)
     print(f'✓ Markdown 已保存到: {output_path}')
