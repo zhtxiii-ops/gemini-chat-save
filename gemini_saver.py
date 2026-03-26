@@ -384,15 +384,52 @@ class GeminiChatSaver:
             
             conversations = await self.extract_conversation()
             
-            # 从页面 DOM 提取对话标题（比直接拿 `title` 更准确）
-            chat_title = await self.page.evaluate('''
+            # 从页面 DOM 提取对话标题（比彻底依赖单一类名更稳健）
+            chat_title = await self.page.evaluate(r'''
                 () => {
-                    // Gemini 的活动对话标题在顶部的 .conversation-title-container 中
-                    const titleEl = document.querySelector('.conversation-title-container, .top-bar-actions .gds-title-m, [data-test-id="chat-title"]');
-                    if (titleEl && titleEl.innerText) {
+                    // 1. 顶部栏的主标题栏
+                    let titleEl = document.querySelector('.conversation-title-container, .top-bar-actions .gds-title-m, [data-test-id="chat-title"]');
+                    if (titleEl && titleEl.innerText && titleEl.innerText.trim()) {
                         return titleEl.innerText.trim();
                     }
-                    return document.title.replace(' - Google Gemini', '').replace(' - Gemini', '').trim();
+                    
+                    // 2. 侧边栏当前选中的激活状态对话标题
+                    titleEl = document.querySelector('conversation-item.active .conversation-title, conversation-item[aria-selected="true"] .conversation-title');
+                    if (titleEl && titleEl.innerText && titleEl.innerText.trim()) {
+                        return titleEl.innerText.trim();
+                    }
+                    
+                    // 3. 根据当前 URL ID 从侧边栏全部链接中精确查找对应的元素
+                    let pathId = location.pathname.split('/').pop();
+                    if (pathId) {
+                        let linkEl = document.querySelector(`a[href*="${pathId}"] .conversation-title, a[href*="${pathId}"]`);
+                        if (linkEl && linkEl.innerText && linkEl.innerText.trim()) {
+                            return linkEl.innerText.trim();
+                        }
+                    }
+                    
+                    // 4. 作为后备，回退到提取 document.title
+                    let docTitle = document.title;
+                    if (docTitle) {
+                        docTitle = docTitle.replace(' - Google Gemini', '').replace(' - Gemini', '').trim();
+                        if (docTitle && docTitle !== 'Gemini' && docTitle !== 'Google Gemini') {
+                            return docTitle;
+                        }
+                    }
+                    
+                    // 5. 如果这是一个没有渲染在侧边栏且没有顶部标题的远古对话，抓取第一句用户提问作为标题
+                    let firstQuery = document.querySelector('user-query p, user-query .query-text-line, .query-text');
+                    if (firstQuery && firstQuery.innerText && firstQuery.innerText.trim()) {
+                        let text = firstQuery.innerText.trim();
+                        text = text.replace(/^你说\s+/i, '');
+                        text = text.replace(/\n|\r/g, ' ');
+                        if (text.length > 20) {
+                            text = text.substring(0, 20);
+                        }
+                        return text.trim();
+                    }
+                    
+                    return '';
                 }
             ''')
             
