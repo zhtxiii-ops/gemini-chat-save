@@ -6,3 +6,9 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+
+# Ignore generated output files
+*.pdf
+*.md
+!README.md
+*_images/
